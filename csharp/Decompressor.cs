@@ -79,16 +79,12 @@ namespace TurboJPEG
 			int pitch = pixelFormat.GetPixelSize() * width;
 
 			byte[] dstBuf = new byte[pitch * height];
-			int retval = 0;
 
 			FunctionFlags flags = FunctionFlags.NoRealloc;
 			if (bottomUp)
 				flags |= FunctionFlags.BottomUp;
 
-			retval = Library.tjDecompress2(_handle, jpegBuf, (uint)jpegBuf.Length, dstBuf, width, pitch, height, pixelFormat, flags);
-
-			if (retval != 0)
-				throw new Exception(Library.tjGetErrorStr());
+			Library.tjDecompress2(_handle, jpegBuf, dstBuf, width, pitch, height, pixelFormat, flags);
 
 			return dstBuf;
 		}
@@ -126,14 +122,9 @@ namespace TurboJPEG
 				flags |= FunctionFlags.BottomUp;
 
 			uint outputSize = Library.tjBufSizeYUV2(width, pad, height, subsamp);
-			if (outputSize == UInt32.MaxValue)
-				throw new Exception(Library.tjGetErrorStr());
-
 			byte[] output = new byte[outputSize];
-			int retval = Library.tjDecompressToYUV2(_handle, jpegBuf, (uint)jpegBuf.Length, output, width, pad, height, flags);
 
-			if (retval != 0)
-				throw new Exception(Library.tjGetErrorStr());
+			Library.tjDecompressToYUV2(_handle, jpegBuf, output, width, pad, height, flags);
 
 			return output;
 		}
@@ -151,10 +142,7 @@ namespace TurboJPEG
 			if (jpegBuf == null)
 				throw new ArgumentNullException(nameof (jpegBuf));
 
-			int retval = Library.tjDecompressHeader3(_handle, jpegBuf, (uint)jpegBuf.Length, out width, out height, out subsamp, out colorspace);
-
-			if (retval != 0)
-				throw new Exception(Library.tjGetErrorStr());
+			Library.tjDecompressHeader3(_handle, jpegBuf, out width, out height, out subsamp, out colorspace);
 		}
 
 	}

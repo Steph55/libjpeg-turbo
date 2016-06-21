@@ -102,10 +102,7 @@ namespace TurboJPEG
 				if (jpegBuf == IntPtr.Zero)
 					throw new Exception(String.Format("tjAlloc failed to allocate {0} bytes", jpegSize));
 
-				int retval = Library.tjCompress2(_handle, srcBuf, width, pitch, height, format, ref jpegBuf, ref jpegSize, jpegSubsamp, jpegQual, flags);
-
-				if (retval != 0)
-					throw new Exception(Library.tjGetErrorStr());
+				Library.tjCompress2(_handle, srcBuf, width, pitch, height, format, ref jpegBuf, ref jpegSize, jpegSubsamp, jpegQual, flags);
 
 				output = new byte[jpegSize];
 

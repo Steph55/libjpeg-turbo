@@ -95,9 +95,7 @@ namespace TurboJPEG
 
 			uint[] dstSizes = new uint[transforms.Length];
 
-			int retval = Library.tjTransform(_handle, jpegBuf, (uint)jpegBuf.Length, transforms.Length, dstBufs, dstSizes, transforms, 0);
-			if (retval != 0)
-				throw new Exception(Library.tjGetErrorStr());
+			Library.tjTransform(_handle, jpegBuf, dstBufs, dstSizes, transforms, (FunctionFlags)0);
 
 			byte[][] output = new byte[transforms.Length][];
 

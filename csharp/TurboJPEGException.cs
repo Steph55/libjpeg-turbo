@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (C)2014-2016 APX Labs, Inc.  All Rights Reserved.
+ * Copyright (C) 2016 APX Labs, Inc.  All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -26,50 +26,18 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-using System.Runtime.InteropServices;
+using System;
 
 namespace TurboJPEG
 {
 	/// <summary>
-	/// Scaling factor.
+	/// Exception that includes TurboJPEG's current error string when constructed.
 	/// </summary>
-	[StructLayout(LayoutKind.Sequential)]
-	public struct ScalingFactor
+	public class TurboJPEGException : Exception
 	{
-		static ScalingFactor()
-		{
-			int numScalingFactors;
-			ScalingFactors = Library.tjGetScalingFactors(out numScalingFactors);
-		}
-
 		/// <summary>
-		/// An array of fractional scaling factors that the JPEG decompressor in
-		/// this implementation of TurboJPEG supports.
+		/// Initializes a new instance of the <see cref="T:TurboJPEG.TurboJPEGException"/> class, including the library's current error string.
 		/// </summary>
-		public static readonly ScalingFactor[] ScalingFactors;
-
-		/// <summary>
-		/// Compute the scaled value of <paramref name="dimension"/> using this scaling factor.
-		/// </summary>
-		/// <param name="dimension">Image width or image height.</param>
-		/// <returns>The scaled value of the supplied dimension.</returns>
-		/// <remarks>
-		/// This function performs the integer equivalent of
-		/// <see cref="System.Math.Ceiling(double)"/>((double)<paramref name="dimension"/> * (double)<see cref="Num"/> / (double)<see cref="Denom"/>).
-		/// </remarks>
-		public int Scaled(int dimension)
-		{
-			return (dimension * Num + Denom - 1) / Denom;
-		}
-
-		/// <summary>
-		/// Numerator.
-		/// </summary>
-		public int Num { get; private set; }
-
-		/// <summary>
-		/// Denominator.
-		/// </summary>
-		public int Denom { get; private set; }
+		public TurboJPEGException () : base(Library.tjGetErrorStr()) {}
 	}
 }

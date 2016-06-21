@@ -32,19 +32,32 @@ using System.Runtime.InteropServices;
 namespace TurboJPEG
 {
 	/// <summary>
-	/// Contains entrypoints to the libjpeg-turbo library.
+	/// Contains entrypoints to the TurboJPEG native library.
 	/// </summary>
 	/// <remarks>
-	/// Due to the use of "unsigned long" in the C API, some functions in this class
-	/// have the wrong prototypes on certain 64-bit systems, specifically, systems which
-	/// use the LP64 data model. In practice, Linux and Unix systems (including Mac OS X)
-	/// fall into this category.
-	/// 
-	/// The <see cref="Library_LP64"/> class contains variants of these functions for use on
-	/// those systems.
+	/// The turbojpeg.h C API uses <c>unsigned long</c> in many functions. Unfortunately, <c>long</c> and
+	/// <c>unsigned long</c> are 32 bits in size on Windows and 32-bit *nix, but are 64 bits in size on 64-bit *nix.
+	/// (64-bit *nix is "LP64", where longs and pointers are both 64 bits, while 64-bit Windows is like 32-bit Windows,
+	/// where long is always 32 bits.) As a result, each of the C APIs that uses <c>long</c> has two entrypoints defined
+	/// in this file; one that uses C# <c>uint</c> for <c>unsigned long</c>, and one that uses C# <c>ulong</c>.
 	/// </remarks>
 	static class Library
 	{
+		static Library()
+		{
+			// Only 64-bit *nix uses LP64. The PCL profile does not define Environment.Is64BitOperatingSystem or
+			// Environment.OSVersion, but what we really want to know is if the current runtime is running in 64-bit mode
+			// on Unix. A 64-bit runtime has 8 byte pointers, and Unix uses '\n' for the newline while Windows uses "\r\n".
+			IsLP64 = IntPtr.Size == 8 ? Environment.NewLine.Equals("\n") : false;
+		}
+
+		/// <summary>
+		/// Gets whether this system is an LP64 system, that is, a system that thinks
+		/// <c>long</c> in native APIs is 64 bits long.
+		/// </summary>
+		/// <value><c>true</c> if this system is LP64; otherwise, <c>false</c>.</value>
+		public static bool IsLP64 { get; private set; }
+
 		/// <summary>
 		/// Pad the given width to the nearest 32-bit boundary.
 		/// </summary>
@@ -59,7 +72,7 @@ namespace TurboJPEG
 		/// Create a TurboJPEG compressor instance.
 		/// </summary>
 		/// <returns>a handle to the newly-created instance, or NULL if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern IntPtr tjInitCompress();
 
 		/// <summary>
@@ -124,7 +137,7 @@ namespace TurboJPEG
 		/// </param>
 		/// <param name="jpegQual">the image quality of the generated JPEG image (1 = worst, 100 = best)</param>
 		/// <param name="flags">the bitwise OR of one or more of the <see cref="FunctionFlags"/>.</param>
-		/// <returns>0 if successful, or -1 if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
+		/// <exception cref="TurboJPEGException">Thrown if an error occurred.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
@@ -132,10 +145,35 @@ namespace TurboJPEG
 		///   int width, int pitch, int height, int pixelFormat, unsigned char** jpegBuf,
 		///   unsigned long* jpegSize, int jpegSubsamp, int jpegQual, int flags);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern int tjCompress2(IntPtr handle, byte[] srcBuf,
+		internal static void tjCompress2 (IntPtr handle, byte [] srcBuf,
+			int width, int pitch, int height, PixelFormat pixelFormat, ref IntPtr jpegBuf,
+			ref uint jpegSize, ChrominanceSubsampling jpegSubsamp, int jpegQual, FunctionFlags flags)
+		{
+			int retval;
+			if (IsLP64)
+			{
+				ulong jpegSize64 = jpegSize;
+				retval = tjCompress2_64 (handle, srcBuf, width, pitch, height, pixelFormat, ref jpegBuf, ref jpegSize64, jpegSubsamp, jpegQual, flags);
+				jpegSize = (uint)jpegSize64;
+			}
+			else
+				retval = tjCompress2_32(handle, srcBuf, width, pitch, height, pixelFormat, ref jpegBuf, ref jpegSize, jpegSubsamp, jpegQual, flags);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjCompress2")]
+		private static extern int tjCompress2_32(IntPtr handle, byte[] srcBuf,
 			int width, int pitch, int height, PixelFormat pixelFormat, ref IntPtr jpegBuf,
 			ref uint jpegSize, ChrominanceSubsampling jpegSubsamp, int jpegQual, FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjCompress2")]
+		private static extern int tjCompress2_64(IntPtr handle, byte [] srcBuf,
+			int width, int pitch, int height, PixelFormat pixelFormat, ref IntPtr jpegBuf,
+			ref ulong jpegSize, ChrominanceSubsampling jpegSubsamp, int jpegQual, FunctionFlags flags);
 
 		/// <summary>Compress a YUV planar image into a JPEG image.</summary>
 		/// <param name="handle">a handle to a TurboJPEG compressor or transformer instance</param>
@@ -187,7 +225,7 @@ namespace TurboJPEG
 		/// <description>
 		/// pre-allocate the buffer to a "worst case" size determined by calling
 		/// <see cref="tjBufSize"/>.  This should ensure that the buffer never has to be
-		/// re-allocated (setting <see cref="FunctionFlags.NoRealloc"/> guarantees this.)		/// </item>
+		/// re-allocated (setting <see cref="FunctionFlags.NoRealloc"/> guarantees this.)
 		/// </description>
 		/// </item>
 		/// </list>
@@ -207,7 +245,7 @@ namespace TurboJPEG
 		/// </param>
 		/// <param name="jpegQual">The image quality of the generated JPEG image (1 = worst, 100 = best)</param>
 		/// <param name="flags">the bitwise OR of one or more of the <see cref="FunctionFlags"/>.</param>
-		/// <returns>0 if successful, or -1 if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
+		/// <exception cref="TurboJPEGException">Thrown if an error occurred.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
@@ -215,11 +253,38 @@ namespace TurboJPEG
 		///   const unsigned char* srcBuf, int width, int pad, int height, int subsamp,
 		///   unsigned char** jpegBuf, unsigned long* jpegSize, int jpegQual, int flags);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern int tjCompressFromYUV(
+		internal static void tjCompressFromYUV(
+			IntPtr handle,
+			byte [] srcBuf, int width, int pad, int height, ChrominanceSubsampling subsamp,
+			ref IntPtr jpegBuf, ref uint jpegSize, int jpegQual, FunctionFlags flags)
+		{
+			int retval;
+			if (IsLP64)
+			{
+				ulong jpegSize64 = jpegSize;
+				retval = tjCompressFromYUV_64 (handle, srcBuf, width, pad, height, subsamp, ref jpegBuf, ref jpegSize64, jpegQual, flags);
+				jpegSize = (uint)jpegSize64;
+			}
+			else
+				retval = tjCompressFromYUV_32(handle, srcBuf, width, pad, height, subsamp, ref jpegBuf, ref jpegSize, jpegQual, flags);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjCompressFromYUV")]
+		private static extern int tjCompressFromYUV_32(
 			IntPtr handle,
 			byte[] srcBuf, int width, int pad, int height, ChrominanceSubsampling subsamp,
 			ref IntPtr jpegBuf, ref uint jpegSize, int jpegQual, FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjCompressFromYUV")]
+		private static extern int tjCompressFromYUV_64(
+			IntPtr handle,
+			byte [] srcBuf, int width, int pad, int height, ChrominanceSubsampling subsamp,
+			ref IntPtr jpegBuf, ref ulong jpegSize, int jpegQual, FunctionFlags flags);
 
 		/// <summary>
 		/// Compress a set of Y, U (Cb), and V (Cr) image planes into a JPEG image.
@@ -279,7 +344,7 @@ namespace TurboJPEG
 		/// <description>
 		/// pre-allocate the buffer to a "worst case" size determined by calling
 		/// <see cref="tjBufSize"/>.  This should ensure that the buffer never has to be
-		/// re-allocated (setting <see cref="FunctionFlags.NoRealloc"/> guarantees this.)		/// </item>
+		/// re-allocated (setting <see cref="FunctionFlags.NoRealloc"/> guarantees this.)
 		/// </description>
 		/// </item>
 		/// </list>
@@ -299,7 +364,7 @@ namespace TurboJPEG
 		/// </param>
 		/// <param name="jpegQual">The image quality of the generated JPEG image (1 = worst, 100 = best)</param>
 		/// <param name="flags">the bitwise OR of one or more of the <see cref="FunctionFlags"/>.</param>
-		/// <returns>0 if successful, or -1 if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
+		/// <exception cref="TurboJPEGException">Thrown if an error occured.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
@@ -308,11 +373,40 @@ namespace TurboJPEG
 		///   int subsamp, unsigned char** jpegBuf, unsigned long* jpegSize, int jpegQual,
 		///   int flags);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
-		internal static extern int tjCompressFromYUVPlanes(
+		internal static void tjCompressFromYUVPlanes(
 			IntPtr handle,
-			IntPtr [] srcPlanes, int width, int [] strides, int height,
+			byte [,] srcPlanes, int width, int [] strides, int height,
 			ChrominanceSubsampling subsamp, ref IntPtr jpegBuf, ref uint jpegSize, int jpegQual,
+			FunctionFlags flags)
+		{
+			int retval;
+			if (IsLP64)
+			{
+				ulong jpegSize64 = jpegSize;
+				retval = tjCompressFromYUVPlanes_64(handle, srcPlanes, width, strides, height, subsamp, ref jpegBuf, ref jpegSize64, jpegQual, flags);
+				jpegSize = (uint)jpegSize64;
+			}
+			else
+				retval = tjCompressFromYUVPlanes_32(handle, srcPlanes, width, strides, height, subsamp, ref jpegBuf, ref jpegSize, jpegQual, flags);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjCompressFromYUVPlanes")]
+		private static extern int tjCompressFromYUVPlanes_32(
+			IntPtr handle,
+			byte [,] srcPlanes, int width, int [] strides, int height,
+			ChrominanceSubsampling subsamp, ref IntPtr jpegBuf, ref uint jpegSize, int jpegQual,
+			FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjCompressFromYUVPlanes")]
+		private static extern int tjCompressFromYUVPlanes_64(
+			IntPtr handle,
+			byte [,] srcPlanes, int width, int [] strides, int height,
+			ChrominanceSubsampling subsamp, ref IntPtr jpegBuf, ref ulong jpegSize, int jpegQual,
 			FunctionFlags flags);
 
 		/// <summary>
@@ -332,19 +426,39 @@ namespace TurboJPEG
 		/// the level of chrominance subsampling to be used when
 		/// generating the JPEG image (see <see cref="ChrominanceSubsampling"/>.)
 		/// </param>
-		/// <returns>
-		/// the maximum size of the buffer (in bytes) required to hold the
-		/// image, or -1 if the arguments are out of bounds.
-		/// </returns>
+		/// <returns>the maximum size of the buffer (in bytes) required to hold the image.</returns>
+		/// <exception cref="ArgumentOutOfRangeException">Thrown if one of the arguments is out of bounds.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
 		/// DLLEXPORT unsigned long DLLCALL tjBufSize(int width, int height,
 		///   int jpegSubsamp);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern uint tjBufSize(int width, int height,
-		                                      ChrominanceSubsampling jpegSubsamp);
+		public static uint tjBufSize(int width, int height, ChrominanceSubsampling jpegSubsamp)
+		{
+			if (IsLP64)
+			{
+				ulong retval = tjBufSize_64 (width, height, jpegSubsamp);
+				if (retval == ulong.MaxValue)
+					throw new ArgumentOutOfRangeException ();
+				return (uint)retval;
+			}
+			else
+			{
+				uint retval = tjBufSize_32 (width, height, jpegSubsamp);
+				if (retval == uint.MaxValue)
+					throw new ArgumentOutOfRangeException ();
+				return retval;
+			}
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjBufSize")]
+		private static extern uint tjBufSize_32(int width, int height, ChrominanceSubsampling jpegSubsamp);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjBufSize")]
+		private static extern ulong tjBufSize_64(int width, int height, ChrominanceSubsampling jpegSubsamp);
 
 		/// <summary>
 		/// The size of the buffer (in bytes) required to hold a YUV planar image with
@@ -360,19 +474,36 @@ namespace TurboJPEG
 		/// level of chrominance subsampling in the image (see
 		/// <see cref="ChrominanceSubsampling"/>.)
 		/// </param>
-		/// <returns>
-		/// the size of the buffer (in bytes) required to hold the image, or
-		/// -1 if the arguments are out of bounds.
-		/// </returns>
+		/// <returns>the size of the buffer (in bytes) required to hold the image</returns>
+		/// <exception cref="ArgumentOutOfRangeException">Thrown if one of the arguments is out of bounds.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
 		/// DLLEXPORT unsigned long DLLCALL tjBufSizeYUV2(int width, int pad, int height,
 		///   int subsamp);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern uint tjBufSizeYUV2(int width, int pad, int height,
-		                                          ChrominanceSubsampling subsamp);
+		public static uint tjBufSizeYUV2(int width, int pad, int height, ChrominanceSubsampling subsamp)
+		{
+			if (IsLP64) {
+				ulong retval = tjBufSizeYUV2_64 (width, pad, height, subsamp);
+				if (retval == ulong.MaxValue)
+					throw new ArgumentOutOfRangeException ();
+				return (uint)retval;
+			} else {
+				uint retval = tjBufSizeYUV2_32 (width, pad, height, subsamp);
+				if (retval == uint.MaxValue)
+					throw new ArgumentOutOfRangeException ();
+				return retval;
+			}
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjBufSizeYUV2")]
+		private static extern uint tjBufSizeYUV2_32(int width, int pad, int height, ChrominanceSubsampling subsamp);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjBufSizeYUV2")]
+		private static extern ulong tjBufSizeYUV2_64 (int width, int pad, int height, ChrominanceSubsampling subsamp);
 
 		/// <summary>
 		/// The size of the buffer (in bytes) required to hold a YUV image plane with
@@ -395,18 +526,40 @@ namespace TurboJPEG
 		/// level of chrominance subsampling in the image (see
 		/// <see cref="ChrominanceSubsampling"/>.)
 		/// </param>
-		/// <returns>
-		/// the size of the buffer (in bytes) required to hold the YUV image
-		/// plane, or -1 if the arguments are out of bounds.
-		/// </returns>
+		/// <returns>the size of the buffer (in bytes) required to hold the YUV image plane.</returns>
+		/// <exception cref="ArgumentOutOfRangeException">Thrown if one of the arguments is out of bounds.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
 		/// DLLEXPORT unsigned long DLLCALL tjPlaneSizeYUV(int componentID, int width,
 		///   int stride, int height, int subsamp);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
-		internal static extern uint tjPlaneSizeYUV(
+		public static ulong tjPlaneSizeYUV(
+			int componentID, int width,
+			int stride, int height, ChrominanceSubsampling subsamp)
+		{
+			if (IsLP64) {
+				ulong retval = tjPlaneSizeYUV_64(componentID, width, stride, height, subsamp);
+				if (retval == ulong.MaxValue)
+					throw new ArgumentOutOfRangeException ();
+				return retval;
+			} else {
+				uint retval = tjPlaneSizeYUV_32(componentID, width, stride, height, subsamp);
+				if (retval == uint.MaxValue)
+					throw new ArgumentOutOfRangeException ();
+				return retval;
+			}
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjPlaneSizeYUV")]
+		private static extern uint tjPlaneSizeYUV_32(
+			int componentID, int width,
+			int stride, int height, ChrominanceSubsampling subsamp);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjPlaneSizeYUV")]
+		private static extern ulong tjPlaneSizeYUV_64(
 			int componentID, int width,
 			int stride, int height, ChrominanceSubsampling subsamp);
 
@@ -429,8 +582,8 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT int tjPlaneWidth(int componentID, int width, int subsamp);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
-		internal static extern int tjPlaneWidth(int componentID, int width, ChrominanceSubsampling subsamp);
+		[DllImport ("libturbojpeg")]
+		public static extern int tjPlaneWidth(int componentID, int width, ChrominanceSubsampling subsamp);
 
 		/// <summary>
 		/// The plane height of a YUV image plane with the given parameters.  Refer to
@@ -451,8 +604,8 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT int tjPlaneHeight(int componentID, int height, int subsamp);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
-		internal static extern int tjPlaneHeight(int componentID, int height, ChrominanceSubsampling subsamp);
+		[DllImport ("libturbojpeg")]
+		public static extern int tjPlaneHeight(int componentID, int height, ChrominanceSubsampling subsamp);
 
 		/// <summary>
 		/// Encode an RGB or grayscale image into a YUV planar image.  This function
@@ -506,9 +659,9 @@ namespace TurboJPEG
 		///   const unsigned char* srcBuf, int width, int pitch, int height,
 		///   int pixelFormat, unsigned char* dstBuf, int pad, int subsamp, int flags);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern int tjEncodeYUV3(IntPtr handle,
-			IntPtr srcBuf, int width, int pitch, int height, PixelFormat pixelFormat,
+			byte[] srcBuf, int width, int pitch, int height, PixelFormat pixelFormat,
 			IntPtr dstBuf, int pad, ChrominanceSubsampling subsamp, FunctionFlags flags);
 
 		/// <summary>
@@ -569,7 +722,7 @@ namespace TurboJPEG
 		///   int pixelFormat, unsigned char** dstPlanes, int* strides, int subsamp,
 		///   int flags);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
+		[DllImport ("libturbojpeg")]
 		internal static extern int tjEncodeYUVPlanes(
 			IntPtr handle,
 			byte[] srcBuf, int width, int pitch, int height,
@@ -580,7 +733,7 @@ namespace TurboJPEG
 		/// Create a TurboJPEG decompressor instance.
 		/// </summary>
 		/// <returns>a handle to the newly-created instance, or NULL if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern IntPtr tjInitDecompress();
 
 		/// <summary>
@@ -588,7 +741,6 @@ namespace TurboJPEG
 		/// </summary>
 		/// <param name="handle">a handle to a TurboJPEG decompressor or transformer instance.</param>
 		/// <param name="jpegBuf">pointer to a buffer containing a JPEG image.</param>
-		/// <param name="jpegSize">size of the JPEG image (in bytes).</param>
 		/// <param name="width">an integer variable that will receive the width (in pixels) of the JPEG image.</param>
 		/// <param name="height">an integer variable that will receive the height (in pixels) of the JPEG image.</param>
 		/// <param name="jpegSubsamp">
@@ -609,9 +761,30 @@ namespace TurboJPEG
 		///   const unsigned char* jpegBuf, unsigned long jpegSize, int* width,
 		///   int* height, int* jpegSubsamp, int* jpegColorspace);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern int tjDecompressHeader3(IntPtr handle,
+		internal static void tjDecompressHeader3 (IntPtr handle, byte [] jpegBuf,
+		                                          out int width, out int height,
+		                                          out ChrominanceSubsampling jpegSubsamp, out Colorspace jpegColorspace)
+		{
+			int retval;
+			if (IsLP64)
+				retval = tjDecompressHeader3_64 (handle, jpegBuf, (ulong)jpegBuf.Length, out width, out height, out jpegSubsamp, out jpegColorspace);
+			else
+				retval = tjDecompressHeader3_32 (handle, jpegBuf, (uint)jpegBuf.Length, out width, out height, out jpegSubsamp, out jpegColorspace);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjDecompressHeader3")]
+		private static extern int tjDecompressHeader3_32(IntPtr handle,
 			byte[] jpegBuf, uint jpegSize, out int width, out int height,
+			out ChrominanceSubsampling jpegSubsamp, out Colorspace jpegColorspace);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint = "tjDecompressHeader3")]
+		private static extern int tjDecompressHeader3_64(IntPtr handle,
+			byte [] jpegBuf, ulong jpegSize, out int width, out int height,
 			out ChrominanceSubsampling jpegSubsamp, out Colorspace jpegColorspace);
 
 		/// <summary>
@@ -625,7 +798,7 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT tjscalingfactor* DLLCALL tjGetScalingFactors(int *numscalingfactors);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		[return : MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)]
 		internal static extern ScalingFactor[] tjGetScalingFactors(out int numscalingfactors);
 
@@ -634,7 +807,6 @@ namespace TurboJPEG
 		/// </summary>
 		/// <param name="handle">a handle to a TurboJPEG decompressor or transformer instance.</param>
 		/// <param name="jpegBuf">pointer to a buffer containing the JPEG image to decompress.</param>
-		/// <param name="jpegSize">size of the JPEG image (in bytes).</param>
 		/// <param name="dstBuf">
 		/// pointer to an image buffer that will receive the decompressed
 		/// image.  This buffer should normally be <c><paramref name="pitch"/> * scaledHeight</c>
@@ -675,7 +847,7 @@ namespace TurboJPEG
 		/// </param>
 		/// <param name="pixelFormat">pixel format of the destination image (see <see cref="PixelFormat"/>.)</param>
 		/// <param name="flags">the bitwise OR of one or more of the <see cref="FunctionFlags"/>.</param>
-		/// <returns>0 if successful, or -1 if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
+		/// <exception cref="TurboJPEGException">Thrown if an error occured.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
@@ -683,9 +855,30 @@ namespace TurboJPEG
 		///   const unsigned char* jpegBuf, unsigned long jpegSize, unsigned char* dstBuf,
 		///   int width, int pitch, int height, int pixelFormat, int flags);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern int tjDecompress2(IntPtr handle,
+		internal static void tjDecompress2 (IntPtr handle,
+			byte [] jpegBuf, byte [] dstBuf,
+			int width, int pitch, int height, PixelFormat pixelFormat, FunctionFlags flags)
+		{
+			int retval;
+			if (IsLP64)
+				retval = tjDecompress2_64 (handle, jpegBuf, (ulong)jpegBuf.Length, dstBuf, width, pitch, height, pixelFormat, flags);
+			else
+				retval = tjDecompress2_32 (handle, jpegBuf, (uint)jpegBuf.Length, dstBuf, width, pitch, height, pixelFormat, flags);
+			
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjDecompress2")]
+		private static extern int tjDecompress2_32(IntPtr handle,
 			byte[] jpegBuf, uint jpegSize, byte[] dstBuf,
+			int width, int pitch, int height, PixelFormat pixelFormat, FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjDecompress2")]
+		private static extern int tjDecompress2_64(IntPtr handle,
+			byte [] jpegBuf, ulong jpegSize, byte [] dstBuf,
 			int width, int pitch, int height, PixelFormat pixelFormat, FunctionFlags flags);
 
 		/// <summary>
@@ -695,7 +888,6 @@ namespace TurboJPEG
 		/// </summary>
 		/// <param name="handle">a handle to a TurboJPEG decompressor or transformer instance.</param>
 		/// <param name="jpegBuf">pointer to a buffer containing the JPEG image to decompress.</param>
-		/// <param name="jpegSize">size of the JPEG image (in bytes).</param>
 		/// <param name="dstBuf">
 		/// pointer to an image buffer that will receive the YUV image.
 		/// Use <see cref="tjBufSizeYUV2"/> to determine the appropriate size for this buffer based
@@ -730,7 +922,7 @@ namespace TurboJPEG
 		/// performed within TurboJPEG.
 		/// </param>
 		/// <param name="flags">the bitwise OR of one or more of the <see cref="FunctionFlags"/>.</param>
-		/// <returns>0 if successful, or -1 if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
+		/// <exception cref="TurboJPEGException">Thrown if an error occured.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
@@ -738,9 +930,33 @@ namespace TurboJPEG
 		///   const unsigned char* jpegBuf, unsigned long jpegSize, unsigned char* dstBuf,
 		///   int width, int pad, int height, int flags);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern int tjDecompressToYUV2(IntPtr handle,
+		internal static void tjDecompressToYUV2(IntPtr handle,
+			byte [] jpegBuf, byte [] dstBuf,
+			int width, int pad, int height,
+			FunctionFlags flags)
+		{
+			int retval;
+
+			if (IsLP64)
+				retval = tjDecompressToYUV2_64 (handle, jpegBuf, (ulong)jpegBuf.Length, dstBuf, width, pad, height, flags);
+			else
+				retval = tjDecompressToYUV2_32 (handle, jpegBuf, (uint)jpegBuf.Length, dstBuf, width, pad, height, flags);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjDecompressToYUV2")]
+		private static extern int tjDecompressToYUV2_32(IntPtr handle,
 			byte[] jpegBuf, uint jpegSize, byte[] dstBuf,
+			int width, int pad, int height,
+			FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjDecompressToYUV2")]
+		private static extern int tjDecompressToYUV2_64(IntPtr handle,
+			byte [] jpegBuf, ulong jpegSize, byte [] dstBuf,
 			int width, int pad, int height,
 			FunctionFlags flags);
 
@@ -751,7 +967,6 @@ namespace TurboJPEG
 		/// </summary>
 		/// <param name="handle">a handle to a TurboJPEG decompressor or transformer instance.</param>
 		/// <param name="jpegBuf">pointer to a buffer containing the JPEG image to decompress</param>
-		/// <param name="jpegSize">size of the JPEG image (in bytes)</param>
 		/// <param name="dstPlanes">
 		/// an array of pointers to Y, U (Cb), and V (Cr) image planes
 		/// (or just a Y plane, if decompressing a grayscale image) that will receive
@@ -792,7 +1007,7 @@ namespace TurboJPEG
 		/// performed within TurboJPEG.
 		/// </param>
 		/// <param name="flags">the bitwise OR of one or more of the <see cref="FunctionFlags"/>.</param>
-		/// <returns>0 if successful, or -1 if an error occurred (see <see cref="tjGetErrorStr"/>.)</returns>
+		/// <exception cref="TurboJPEGException">Thrown if an error occured.</exception>
 		/// <remarks>
 		/// Defined in turbojpeg.h as:
 		/// 
@@ -800,11 +1015,33 @@ namespace TurboJPEG
 		///   const unsigned char* jpegBuf, unsigned long jpegSize,
 		///   unsigned char** dstPlanes, int width, int* strides, int height, int flags);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
-		internal static extern int tjDecompressToYUVPlanes(
+		internal static void tjDecompressToYUVPlanes (
+			IntPtr handle, byte[] jpegBuf, byte[,] dstPlanes, int width, int [] strides, int height, FunctionFlags flags)
+		{
+			int retval;
+
+			if (IsLP64)
+				retval = tjDecompressToYUVPlanes_64 (handle, jpegBuf, (ulong)jpegBuf.Length, dstPlanes, width, strides, height, flags);
+			else
+				retval = tjDecompressToYUVPlanes_32 (handle, jpegBuf, (uint)jpegBuf.Length, dstPlanes, width, strides, height, flags);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjDecompressToYUVPlanes")]
+		private static extern int tjDecompressToYUVPlanes_32(
 			IntPtr handle,
 			byte[] jpegBuf, uint jpegSize,
-			byte[][] dstPlanes, int width, int[] strides, int height, FunctionFlags flags);
+			byte[,] dstPlanes, int width, int[] strides, int height, FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjDecompressToYUVPlanes")]
+		private static extern int tjDecompressToYUVPlanes_64(
+			IntPtr handle,
+			byte[] jpegBuf, ulong jpegSize,
+			byte[,] dstPlanes, int width, int[] strides, int height, FunctionFlags flags);
 
 		/// <summary>
 		/// Decode a YUV planar image into an RGB or grayscale image.  This function
@@ -859,7 +1096,7 @@ namespace TurboJPEG
 		///   int pad, int subsamp, unsigned char* dstBuf, int width, int pitch,
 		///   int height, int pixelFormat, int flags);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
+		[DllImport ("libturbojpeg")]
 		internal static extern int tjDecodeYUV(
 			IntPtr handle, byte[] srcBuf,
 			int pad, ChrominanceSubsampling subsamp, IntPtr dstBuf, int width, int pitch,
@@ -924,10 +1161,10 @@ namespace TurboJPEG
 		///   unsigned char* dstBuf, int width, int pitch, int height, int pixelFormat,
 		///   int flags);
 		/// </remarks>
-		[DllImport ("libjpeg-turbo.so")]
+		[DllImport ("libturbojpeg")]
 		internal static extern int tjDecodeYUVPlanes (
 			IntPtr handle,
-			byte[][] srcPlanes, int[] strides, ChrominanceSubsampling subsamp,
+			byte[,] srcPlanes, int[] strides, ChrominanceSubsampling subsamp,
 			byte[] dstBuf, int width, int pitch, int height, PixelFormat pixelFormat,
 			FunctionFlags flags);
 
@@ -940,7 +1177,7 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT tjhandle DLLCALL tjInitTransform(void);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern IntPtr tjInitTransform();
 
 		/// <summary>
@@ -958,8 +1195,6 @@ namespace TurboJPEG
 		/// </summary>
 		/// <param name="handle">a handle to a TurboJPEG transformer instance.</param>
 		/// <param name="jpegBuf">pointer to a buffer containing the JPEG image to transform</param>
-		/// <param name="jpegSize">size of the JPEG image (in bytes)</param>
-		/// <param name="n">the number of transformed JPEG images to generate</param>
 		/// <param name="dstBufs">
 		/// pointer to an array of <paramref name="n"/> image buffers.  <paramref name="dstBufs"/>[i]
 		/// will receive a JPEG image that has been transformed using the
@@ -1015,9 +1250,36 @@ namespace TurboJPEG
 		///   unsigned char** dstBufs, unsigned long* dstSizes, tjtransform *transforms,
 		///   int flags);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
-		internal static extern int tjTransform(IntPtr handle, byte[] jpegBuf,
+		internal static void tjTransform(IntPtr handle, byte [] jpegBuf, IntPtr[] dstBufs, uint [] dstSizes, Transform [] transforms, FunctionFlags flags)
+		{
+			int retval;
+
+			if (IsLP64)
+			{
+				ulong [] dstSizes64 = new ulong [dstSizes.Length];
+				dstSizes.CopyTo (dstSizes64, 0);
+
+				retval = tjTransform_64 (handle, jpegBuf, (ulong)jpegBuf.Length, transforms.Length, dstBufs, dstSizes64, transforms, flags);
+
+				for (int i = 0; i < dstSizes.Length; ++i)
+					dstSizes [i] = (uint)dstSizes64 [i];
+			}
+			else
+				retval = tjTransform_32 (handle, jpegBuf, (uint)jpegBuf.Length, transforms.Length, dstBufs, dstSizes, transforms, flags);
+
+			if (retval != 0)
+				throw new TurboJPEGException ();
+		}
+
+		// ILP32 / LLP64 version
+		[DllImport("libturbojpeg", EntryPoint="tjTransform")]
+		private static extern int tjTransform_32 (IntPtr handle, byte[] jpegBuf,
 			uint jpegSize, int n, IntPtr[] dstBufs, uint[] dstSizes, Transform[] transforms, FunctionFlags flags);
+
+		// LP64 version
+		[DllImport ("libturbojpeg", EntryPoint="tjTransform")]
+		private static extern int tjTransform_64 (IntPtr handle, byte [] jpegBuf,
+			ulong jpegSize, int n, IntPtr[] dstBufs, ulong [] dstSizes, Transform [] transforms, FunctionFlags flags);
 
 		/// <summary>
 		/// Destroy a TurboJPEG compressor, decompressor, or transformer instance.
@@ -1029,7 +1291,7 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT int DLLCALL tjDestroy(tjhandle handle);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern int tjDestroy(IntPtr handle);
 
 		/// <summary>
@@ -1046,7 +1308,7 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT unsigned char* DLLCALL tjAlloc(int bytes);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern IntPtr tjAlloc(int bytes);
 
 		/// <summary>
@@ -1062,7 +1324,7 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT void DLLCALL tjFree(unsigned char *buffer);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so")]
+		[DllImport("libturbojpeg")]
 		internal static extern void tjFree(IntPtr buffer);
 
 		/// <summary>
@@ -1074,7 +1336,7 @@ namespace TurboJPEG
 		/// 
 		/// DLLEXPORT char* DLLCALL tjGetErrorStr(void);
 		/// </remarks>
-		[DllImport("libjpeg-turbo.so", CharSet=CharSet.Ansi)]
+		[DllImport("libturbojpeg", CharSet=CharSet.Ansi)]
 		[return: MarshalAs(UnmanagedType.LPStr)]
 		internal static extern string tjGetErrorStr();
 	}
