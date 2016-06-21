@@ -12,3 +12,6 @@ depcomp
 install-sh
 ltmain.sh
 missing
+*.userprefs
+csharp/bin
+csharp/obj
